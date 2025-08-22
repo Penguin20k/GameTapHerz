@@ -1,1 +1,253 @@
-# GameTapHerz
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<title>Tap Hearts</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover,user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<style>
+  :root { color-scheme: light; }
+  html, body { margin:0; padding:0; height:100%; background:#fce4ec; overflow:hidden; }
+  /* холст тянется на визуальную высоту; точные размеры задаёт JS */
+  canvas { display:block; width:100svw; height:100svh; background:#fce4ec; touch-action:none; }
+  #hud {
+    position:fixed; inset:auto 0 auto 0; top:8px; display:flex; gap:14px; justify-content:center;
+    font:700 22px/1.1 system-ui,-apple-system,Segoe UI,Roboto; color:#e91e63; text-shadow:1px 1px #fff;
+    pointer-events:none; z-index:5;
+  }
+  #overlay {
+    position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.5); z-index:10;
+  }
+  #card {
+    background:#fff; padding:16px 18px; border-radius:12px; text-align:center;
+    font:600 16px/1.25 system-ui,-apple-system,Segoe UI,Roboto; max-width:min(90vw,420px);
+    box-shadow:0 10px 30px rgba(0,0,0,.25);
+  }
+  #btn {
+    margin-top:10px; padding:10px 16px; border:0; border-radius:10px;
+    background:#e91e63; color:#fff; font:700 18px system-ui; cursor:pointer;
+  }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div>❤️ <span id="score">0</span></div>
+  <div>🏆 <span id="best">0</span></div>
+</div>
+<canvas id="game"></canvas>
+
+<div id="overlay">
+  <div id="card">
+    <div id="msg">Нажимай на ❤️, избегай 🖤<br/>Пропустишь ❤️ — конец игры.</div>
+    <button id="btn">Играть</button>
+  </div>
+</div>
+
+<script>
+const cvs = document.getElementById('game');
+const ctx = cvs.getContext('2d');
+const $score = document.getElementById('score');
+const $best  = document.getElementById('best');
+const overlay = document.getElementById('overlay');
+const msg = document.getElementById('msg');
+const btn = document.getElementById('btn');
+
+// --------- Размеры: точная подгонка под экран и DPR ---------
+function sizeCanvas() {
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  // Берём визуальную высоту, чтобы не «ломалось» из-за полос адреса
+  const vw = Math.round(window.innerWidth);
+  const vh = Math.round(window.visualViewport ? window.visualViewport.height : window.innerHeight);
+
+  // CSS размер (для раскладки)
+  cvs.style.width  = vw + 'px';
+  cvs.style.height = vh + 'px';
+
+  // Внутренний размер (пиксели устройства)
+  cvs.width  = Math.round(vw * dpr);
+  cvs.height = Math.round(vh * dpr);
+
+  // Маштабируем контекст так, чтобы 1 единица = 1 CSS пиксель
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // Обновим игровые границы
+  WORLD.w = vw;
+  WORLD.h = vh;
+}
+addEventListener('resize', sizeCanvas, {passive:true});
+addEventListener('orientationchange', () => setTimeout(sizeCanvas, 200), {passive:true});
+
+// --------- Мир и состояние ---------
+const WORLD = { w: 0, h: 0 };
+let playing = false, score = 0, best = +localStorage.getItem('taphearts_best') || 0;
+$best.textContent = best;
+
+let speed = 2;          // базовая скорость падения
+let spawn = 0;          // таймер спавна
+let frame = 0;
+const hearts = [];      // объекты сердечек
+const effects = [];     // частицы/вспышки
+
+// --------- Текстуры (встроенные, офлайн) ---------
+const redImg = new Image();
+redImg.src   = 'data:image/svg+xml;utf8,' +
+  '<svg xmlns="http://www.w3.org/2000/svg" width="84" height="84">' +
+  '<path d="M42 76s36-18 36-42a18 18 0 0 0-36 0 18 18 0 0 0-36 0c0 24 36 42 36 42z" fill="%23e91e63"/></svg>';
+const blackImg = new Image();
+blackImg.src  = 'data:image/svg+xml;utf8,' +
+  '<svg xmlns="http://www.w3.org/2000/svg" width="84" height="84">' +
+  '<path d="M42 76s36-18 36-42a18 18 0 0 0-36 0 18 18 0 0 0-36 0c0 24 36 42 36 42z" fill="%23000"/></svg>';
+
+// --------- Игровые функции ---------
+function startGame() {
+  score = 0; $score.textContent = score;
+  speed = 2; frame = 0; spawn = 0;
+  hearts.length = 0; effects.length = 0;
+  overlay.style.display = 'none';
+  playing = true;
+
+  // Попробуем фуллскрин (по клику разрешено)
+  const el = document.documentElement;
+  if (el.requestFullscreen) el.requestFullscreen().catch(()=>{});
+  else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+}
+function endGame() {
+  playing = false;
+  if (score > best) {
+    best = score; localStorage.setItem('taphearts_best', best);
+    $best.textContent = best;
+  }
+  msg.innerHTML = `Game Over<br/>Очки: ${score}`;
+  overlay.style.display = 'flex';
+}
+
+function spawnHeart() {
+  const size = 84; // большие, удобно жать
+  const type = Math.random() < 0.8 ? 'red' : 'black'; // 80% красных
+  hearts.push({
+    x: Math.random() * (WORLD.w - size),
+    y: -size,
+    w: size, h: size,
+    type
+  });
+}
+
+function addEffect(x, y, type) {
+  if (type === 'red') {
+    // мягкая вспышка
+    effects.push({ kind:'flash', x, y, r:12, a:1 });
+  } else {
+    // частицы-взрыв
+    for (let i=0;i<12;i++) {
+      const ang = Math.random()*Math.PI*2;
+      const spd = 2 + Math.random()*3;
+      effects.push({ kind:'particle', x, y, dx:Math.cos(ang)*spd, dy:Math.sin(ang)*spd, r:4, a:1 });
+    }
+  }
+}
+
+function drawEffects() {
+  for (let i=effects.length-1; i>=0; i--) {
+    const e = effects[i];
+    if (e.kind === 'flash') {
+      e.r += 0.6; e.a -= 0.03;
+      if (e.a <= 0) { effects.splice(i,1); continue; }
+      ctx.fillStyle = `rgba(233,30,99,${e.a})`;
+      ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI*2); ctx.fill();
+    } else {
+      e.x += e.dx; e.y += e.dy; e.a -= 0.03; e.r *= 0.98;
+      if (e.a <= 0) { effects.splice(i,1); continue; }
+      ctx.fillStyle = `rgba(0,0,0,${e.a})`;
+      ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI*2); ctx.fill();
+    }
+  }
+}
+
+function loop() {
+  requestAnimationFrame(loop);
+  ctx.clearRect(0, 0, WORLD.w, WORLD.h);
+
+  if (playing) {
+    frame++;
+
+    // спавн часто
+    if (--spawn <= 0) {
+      spawn = 16 + Math.random()*16; // чаще, динамично
+      spawnHeart();
+    }
+
+    const fall = speed + Math.min(5, score * 0.06); // ускорение со временем
+
+    // апдейт сердец
+    for (let i=hearts.length-1; i>=0; i--) {
+      const h = hearts[i];
+      h.y += fall;
+
+      if (h.y > WORLD.h) {
+        if (h.type === 'red') { endGame(); return; }
+        else { hearts.splice(i,1); }
+      }
+    }
+
+    // плавное увеличение базовой скорости раз в ~10с
+    if (frame % 600 === 0) speed += 0.5;
+  }
+
+  // рисуем сердца
+  for (const h of hearts) {
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(h.type==='red' ? redImg : blackImg, h.x, h.y, h.w, h.h);
+  }
+
+  // эффекты
+  drawEffects();
+}
+loop();
+
+// --------- Точное попадание по тапам (в любой зоне) ---------
+function canvasPointFromEvent(e) {
+  const rect = cvs.getBoundingClientRect();
+  // clientX/Y — в CSS-пикселях; мы рисуем в этих же единицах (масштаб уже учтён)
+  const x = (e.clientX ?? e.touches?.[0]?.clientX) - rect.left;
+  const y = (e.clientY ?? e.touches?.[0]?.clientY) - rect.top;
+  return { x, y };
+}
+
+function tapAt(x, y) {
+  for (let i=hearts.length-1; i>=0; i--) {
+    const h = hearts[i];
+    if (x >= h.x && x <= h.x+h.w && y >= h.y && y <= h.y+h.h) {
+      if (h.type === 'red') {
+        score++; $score.textContent = score; addEffect(h.x+h.w/2, h.y+h.h/2, 'red');
+      } else {
+        score = Math.max(0, score-2); $score.textContent = score; addEffect(h.x+h.w/2, h.y+h.h/2, 'black');
+      }
+      hearts.splice(i,1);
+      return true;
+    }
+  }
+  return false;
+}
+
+// pointer events работают и на iOS, и на Android
+cvs.addEventListener('pointerdown', (e) => {
+  if (!playing) return;
+  e.preventDefault();
+  const p = canvasPointFromEvent(e);
+  tapAt(p.x, p.y);
+}, {passive:false});
+
+// старт
+btn.addEventListener('click', () => {
+  // перед стартом гарантируем корректный размер
+  sizeCanvas();
+  startGame();
+});
+
+// первичная подгонка
+sizeCanvas();
+</script>
+</body>
+</html>
