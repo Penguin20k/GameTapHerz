@@ -16,10 +16,14 @@
     background:var(--bg);
     touch-action:none;
   }
-  #hud{
-    position:fixed; top:8px; left:0; right:0; display:flex; gap:14px; justify-content:center;
-    font:700 22px/1.1 system-ui,-apple-system,Segoe UI,Roboto; color:#e91e63; text-shadow:1px 1px #fff;
-    pointer-events:none; z-index:5;
+  #hud {
+  position:fixed;
+  top:calc(env(safe-area-inset-top, 0px) + 8px); /* учитываем вырез + обычный отступ */
+  left:0; right:0;
+  display:flex; gap:14px; justify-content:center;
+  font:700 22px/1.1 system-ui,-apple-system,Segoe UI,Roboto;
+  color:#e91e63; text-shadow:1px 1px #fff;
+  pointer-events:none; z-index:5;
   }
   #overlay{
     position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
